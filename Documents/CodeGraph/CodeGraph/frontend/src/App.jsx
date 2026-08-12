@@ -1,10 +1,30 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback, memo, lazy, Suspense } from 'react';
 import axios from 'axios';
 import { Search, Zap, GitBranch, ExternalLink, ArrowLeft } from 'lucide-react';
 import GraphView from './components/GraphView';
-import ChatPanel from './components/ChatPanel';
 import StatsBar from './components/StatsBar';
-import FileViewer from './components/FileViewer';
+import LanguageStats from './components/LanguageStats';
+
+// Lazy load components for better performance
+const ChatPanel = lazy(() => import('./components/ChatPanel'));
+const FileViewer = lazy(() => import('./components/FileViewer'));
+
+// Debounce hook to prevent excessive function calls
+function useDebounce(value, delay) {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedValue(value);
+    }, delay);
+
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [value, delay]);
+
+  return debouncedValue;
+}
 
 /**
  * Main application component.
@@ -12,6 +32,7 @@ import FileViewer from './components/FileViewer';
  */
 export default function App() {
   const [repoUrl, setRepoUrl] = useState('');
+  const [debouncedRepoUrl, setDebouncedRepoUrl] = useState('');
   const [repoData, setRepoData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -20,10 +41,58 @@ export default function App() {
   const [learningPath, setLearningPath] = useState(null);
   const [codeQuality, setCodeQuality] = useState(null);
   const [activeTab, setActiveTab] = useState('graph');
+  const [repoHistory, setRepoHistory] = useState([]);
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    // Check localStorage for saved theme preference, or default to dark
+    const savedTheme = localStorage.getItem('codegraph-theme');
+    return savedTheme === 'light' ? false : true;
+  });
+
+  // Apply theme class to body element
+  useEffect(() => {
+    if (isDarkMode) {
+      document.body.classList.remove('light-theme');
+    } else {
+      document.body.classList.add('light-theme');
+    }
+    localStorage.setItem('codegraph-theme', isDarkMode ? 'dark' : 'light');
+  }, [isDarkMode]);
+
+  // Initialize theme on first load based on localStorage or system preference
+  useEffect(() => {
+    const savedTheme = localStorage.getItem('codegraph-theme');
+    if (savedTheme === 'light') {
+      setIsDarkMode(false);
+    } else if (savedTheme === 'dark') {
+      setIsDarkMode(true);
+    } else {
+      // Check system preference if no saved theme
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      setIsDarkMode(prefersDark);
+    }
+  }, []);
+
+  // Debounce repoUrl input to prevent excessive API calls
+  useEffect(() => {
+    setDebouncedRepoUrl(repoUrl);
+  }, [repoUrl]);
+
+  // Use debouncedRepoUrl for triggering analysis to prevent excessive API calls
+  // We'll use this in our analysis functions instead of repoUrl directly
+
+  // Toggle theme function
+  const toggleTheme = () => {
+    setIsDarkMode(!isDarkMode);
+  };
+
+  // Stable onClose function for FileViewer to prevent unnecessary re-renders
+  const handleFileClose = useCallback(() => {
+    setSelectedFile(null);
+  }, []);
 
   async function handleAnalyze(e) {
     e?.preventDefault();
-    const url = repoUrl.trim();
+    const url = debouncedRepoUrl.trim();
     if (!url) return;
 
     setLoading(true);
@@ -36,6 +105,8 @@ export default function App() {
     try {
       const res = await axios.post('/api/analyze', { url });
       setRepoData(res.data);
+      // Add to history on successful analysis
+      addToHistory(url);
     } catch (err) {
       const msg = err.response?.data?.error || err.message;
       setError(msg);
@@ -46,11 +117,11 @@ export default function App() {
 
   // New analysis functions
   async function analyzeDependencies() {
-    if (!repoUrl) return;
+    if (!debouncedRepoUrl) return;
 
     setLoading(true);
     try {
-      const res = await axios.post('/api/dependencies', { url: repoUrl });
+      const res = await axios.post('/api/dependencies', { url: debouncedRepoUrl });
       setDependencies(res.data);
     } catch (err) {
       const msg = err.response?.data?.error || err.message;
@@ -61,12 +132,12 @@ export default function App() {
   }
 
   async function generateLearningPath(userLevel = 'beginner') {
-    if (!repoUrl) return;
+    if (!debouncedRepoUrl) return;
 
     setLoading(true);
     try {
       const res = await axios.post('/api/learning-path', {
-        url: repoUrl,
+        url: debouncedRepoUrl,
         user_level: userLevel
       });
       setLearningPath(res.data);
@@ -79,11 +150,11 @@ export default function App() {
   }
 
   async function analyzeCodeQuality() {
-    if (!repoUrl) return;
+    if (!debouncedRepoUrl) return;
 
     setLoading(true);
     try {
-      const res = await axios.post('/api/code-quality', { url: repoUrl });
+      const res = await axios.post('/api/code-quality', { url: debouncedRepoUrl });
       setCodeQuality(res.data);
     } catch (err) {
       const msg = err.response?.data?.error || err.message;
@@ -98,6 +169,51 @@ export default function App() {
     setRepoUrl(url);
   }
 
+  // Get a random demo repository for fun surprises
+  function getRandomDemoRepo() {
+    const demoRepos = [
+      'https://github.com/expressjs/express',
+      'https://github.com/microsoft/vscode',
+      'https://github.com/tensorflow/tensorflow',
+      'https://github.com/facebook/react',
+      'https://github.com/ipping/git',
+      'https://github.com/nodejs/node',
+      'https://github.com/facebook/react-native',
+      'https://github.com/microsoft/TypeScript',
+      'https://github.com/angular/angular',
+      'https://github.com/vuejs/vue'
+    ];
+    return demoRepos[Math.floor(Math.random() * demoRepos.length)];
+  }
+
+  // Load repository history from localStorage
+  useEffect(() => {
+    const savedHistory = localStorage.getItem('codegraphRepoHistory');
+    if (savedHistory) {
+      try {
+        setRepoHistory(JSON.parse(savedHistory));
+      } catch (e) {
+        console.warn('Failed to parse repo history from localStorage', e);
+      }
+    }
+  }, []);
+
+  // Save repository history to localStorage
+  useEffect(() => {
+    localStorage.setItem('codegraphRepoHistory', JSON.stringify(repoHistory));
+  }, [repoHistory]);
+
+  // Add a repository to history (avoiding duplicates, max 10 items)
+  function addToHistory(url) {
+    if (!url) return;
+
+    // Remove if already exists (to move it to front)
+    const updatedHistory = repoHistory.filter(item => item !== url);
+    // Add to front and limit to 10 items
+    const newHistory = [url, ...updatedHistory].slice(0, 10);
+    setRepoHistory(newHistory);
+  }
+
   const handleNodeClick = (event, node) => {
     if (node.data?.type === 'file' && node.data?.path) {
       setSelectedFile(node.data.path);
@@ -108,7 +224,7 @@ export default function App() {
   if (!repoData) {
     return (
       <div className="app-container">
-        <Header status="🟢 System Online" />
+        <Header status="���������🟢 System Online" isDarkMode={isDarkMode} toggleTheme={toggleTheme} />
         <div className="hero-section">
           <div className="hero-badge">
             <span className="hero-badge-dot" />
@@ -170,7 +286,36 @@ export default function App() {
             <button onClick={() => fillDemo('https://github.com/tensorflow/tensorflow')}>
               TensorFlow
             </button>
+            <button onClick={() => fillDemo(getRandomDemoRepo())} className="demo-repo-random">
+              Random Repo
+            </button>
           </div>
+
+          {/* Repository History */}
+          {repoHistory.length > 0 && (
+            <div className="repo-history">
+              <label htmlFor="history-select" className="history-label">
+                Recently Analyzed:
+              </label>
+              <select
+                id="history-select"
+                className="history-select"
+                onChange={(e) => {
+                  if (e.target.value) {
+                    setRepoUrl(e.target.value);
+                  }
+                }}
+                value={repoUrl}
+              >
+                <option value="">Select a repository...</option>
+                {repoHistory.map((url, index) => (
+                  <option key={index} value={url}>
+                    {url.replace('https://github.com/', '')}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -179,7 +324,7 @@ export default function App() {
   // ─── Analyzed Workspace State ───
   return (
     <div className="app-container">
-      <Header status="🟢 System Online" />
+      <Header status="���������������������🟢 System Online" isDarkMode={isDarkMode} toggleTheme={toggleTheme} />
       <div className="workspace">
         {/* Sidebar */}
         <aside className="sidebar">
@@ -289,7 +434,7 @@ export default function App() {
                           <p><strong>Score:</strong> {result.analysis.overall_score || 'N/A'}/10</p>
                           {result.analysis.strengths && result.analysis.strengths.length > 0 && (
                             <>
-                              <p><strong>Strengths:</strong></p>
+                              <p><strong>Strengths:</strong> </p>
                               <ul>
                                 {result.analysis.strengths.map((s, i) => (
                                   <li key={i}>• {s}</li>
@@ -316,6 +461,13 @@ export default function App() {
                   ))}
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* Language Statistics */}
+          {repoData && repoData.stats.language_stats && (
+            <div className="sidebar-section">
+              <LanguageStats languageStats={repoData.stats.language_stats} />
             </div>
           )}
         </aside>
@@ -360,19 +512,23 @@ export default function App() {
               )}
 
               {activeTab === 'chat' && (
-                <ChatPanel
-                  treeText={repoData.tree_text}
-                  hasRepo={true}
-                  repoUrl={repoUrl}
-                />
+                <Suspense fallback={<div className="glass-card">Loading AI Copilot...</div>}>
+                  <ChatPanel
+                    treeText={repoData.tree_text}
+                    hasRepo={true}
+                    repoUrl={repoUrl}
+                  />
+                </Suspense>
               )}
 
               {activeTab === 'file' && selectedFile && (
-                <FileViewer
-                  repoUrl={repoUrl}
-                  filePath={selectedFile}
-                  onClose={() => setSelectedFile(null)}
-                />
+                <Suspense fallback={<div className="glass-card">Loading File Viewer...</div>}>
+                  <FileViewer
+                    repoUrl={repoUrl}
+                    filePath={selectedFile}
+                    onClose={handleFileClose}
+                  />
+                </Suspense>
               )}
 
               {activeTab === 'file' && !selectedFile && (
@@ -389,7 +545,7 @@ export default function App() {
 }
 
 // Header component
-function Header({ status }) {
+const Header = memo(({ status, isDarkMode, toggleTheme }) => {
   return (
     <header className="header">
       <div className="header-content">
@@ -397,7 +553,26 @@ function Header({ status }) {
           <h1>CodeGraph</h1>
           <p>Developer Onboarding Copilot</p>
         </div>
-        <div className="header-status">{status}</div>
+        <div className="header-status">
+          <div className="theme-toggle" onClick={toggleTheme} title="Toggle dark/light mode">
+            {isDarkMode ? (
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+              </svg>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="5"></circle>
+                <line x1="12" y1="1" x2="12" y2="11"></line>
+                <line x1="12" y1="13" x2="12" y2="23"></line>
+                <line x1="4.22" y1="4.22" x2="7.76" y2="7.76"></line>
+                <line x1="16.24" y1="16.24" x2="19.78" y2="19.78"></line>
+                <line x1="1" y1="12" x2="11" y2="12"></line>
+                <line x1="13" y1="12" x2="23" y2="12"></line>
+              </svg>
+            )}
+          </div>
+          <span>{status}</span>
+        </div>
       </div>
     </header>
   );

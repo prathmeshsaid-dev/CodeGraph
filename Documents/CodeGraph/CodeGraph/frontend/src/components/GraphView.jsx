@@ -10,7 +10,43 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import CustomNode from './CustomNode';
-import { GitBranch, Layers, Filter } from 'lucide-react';
+import { GitBranch, Layers, Filter, SaveAll } from 'lucide-react';
+
+// Audio context for sound effects
+let audioContext = null;
+
+function getAudioContext() {
+  if (!audioContext && typeof window !== 'undefined') {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  return audioContext;
+}
+
+function playClickSound() {
+  try {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+
+    const oscillator = ctx.createOscillator();
+    const gainNode = ctx.createGain();
+
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(800, ctx.currentTime); // Frequency in hertz
+    oscillator.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1);
+
+    gainNode.gain.setValueAtTime(0.2, ctx.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1);
+
+    oscillator.connect(gainNode);
+    gainNode.connect(ctx.destination);
+
+    oscillator.start();
+    oscillator.stop(ctx.currentTime + 0.1);
+  } catch (e) {
+    // Silently fail if audio context creation fails
+    console.warn('Could not play click sound:', e);
+  }
+}
 
 const nodeTypes = { custom: CustomNode };
 
@@ -75,6 +111,7 @@ function formatEdges(rawEdges) {
 
 export default function GraphView({ repoData, onNodeClick }) {
   const [filterFolders, setFilterFolders] = useState(false);
+  const [reactFlowInstance, setReactFlowInstance] = useState(null);
 
   // Filter nodes if toggle is on — show only folders + root
   const filteredData = useMemo(() => {
@@ -114,9 +151,38 @@ export default function GraphView({ repoData, onNodeClick }) {
   }, [layoutedNodes, styledEdges, setNodes, setEdges]);
 
   const onInit = useCallback((instance) => {
+    setReactFlowInstance(instance);
     // Fit view with some padding after initial render
     setTimeout(() => instance.fitView({ padding: 0.2 }), 100);
   }, []);
+
+  // Handle node click with sound effect
+  const handleNodeClickWithSound = useCallback((event, node) => {
+    // Play subtle click sound
+    playClickSound();
+
+    // Call the original onNodeClick handler if provided
+    if (onNodeClick) {
+      onNodeClick(event, node);
+    }
+  }, [onNodeClick]);
+
+  const handleExport = useCallback(async () => {
+    if (!reactFlowInstance) return;
+    try {
+      const imageBlob = await reactFlowInstance.getImage();
+      const url = window.URL.createObjectURL(imageBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'codegraph.png';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Failed to export graph:', err);
+    }
+  }, [reactFlowInstance]);
 
   if (!repoData) {
     return (
@@ -155,6 +221,15 @@ export default function GraphView({ repoData, onNodeClick }) {
             {filteredData.nodes.length} nodes
           </div>
         </div>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button
+            className="graph-toolbar-btn"
+            onClick={handleExport}
+            title="Export graph as PNG"
+          >
+            <SaveAll size={14} />
+          </button>
+        </div>
       </div>
 
       <ReactFlow
@@ -162,7 +237,7 @@ export default function GraphView({ repoData, onNodeClick }) {
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
-        onNodeClick={onNodeClick}
+        onNodeClick={handleNodeClickWithSound}
         onInit={onInit}
         nodeTypes={nodeTypes}
         fitView

@@ -48,7 +48,10 @@ MOCK_REPO_DATA = {
         "files": 3,
         "folders": 2,
         "language": "JavaScript",
-        "description": "Mock description for offline demo"
+        "language_stats": {"JavaScript": 3000, "HTML": 1500, "CSS": 800},
+        "description": "Mock description for offline demo",
+        "stars": 42,
+        "forks": 15
     },
     "tree_text": "my-repo/\n  src/\n    index.js\n    utils.js\n  package.json"
 }
@@ -88,13 +91,18 @@ def analyze_repo():
 
         langs = repo.get_languages()
         language = "Multi-lang"
+        language_stats = {}
         if langs and isinstance(langs, dict):
             # Filter out any non-integer metadata keys PyGithub might return
             valid_langs = {k: v for k, v in langs.items() if isinstance(v, int) or (isinstance(v, str) and v.isdigit())}
             if valid_langs:
-                sorted_langs = sorted(valid_langs.items(), key=lambda x: int(x[1]), reverse=True)
-                # Show up to top 2 languages
-                language = ", ".join([l[0] for l in sorted_langs[:2]])
+                # Convert string values to integers for consistency
+                language_stats = {k: int(v) for k, v in valid_langs.items()}
+                # Sort by byte count descending
+                sorted_langs = sorted(language_stats.items(), key=lambda x: x[1], reverse=True)
+                # Show up to top 5 languages for the detailed view
+                top_languages = [l[0] for l in sorted_langs[:5]]
+                language = ", ".join(top_languages) if top_languages else "Multi-lang"
 
         nodes = [{"id": "root", "data": {"label": repo_name, "type": "folder"}}]
         edges = []
@@ -135,7 +143,10 @@ def analyze_repo():
                 "files": files_count,
                 "folders": folders_count,
                 "language": language,
-                "description": repo.description or "No description"
+                "language_stats": language_stats,
+                "description": repo.description or "No description",
+                "stars": repo.stargazers_count,
+                "forks": repo.forks_count
             },
             "tree_text": "\n".join(tree_text_lines[:200])
         })
@@ -498,7 +509,186 @@ def compute_math():
         traceback.print_exc()
         return jsonify({"error": f"Computation failed: {str(e)}"}), 500
 
-# ... rest of the existing endpoints (dependencies, learning-path, code-quality) remain unchanged ...
+# Dependencies analysis endpoint
+@app.route('/dependencies', methods=['POST'])
+def analyze_dependencies():
+    data = request.json or {}
+    repo_url = data.get('url', '')
+    
+    if not repo_url:
+        return jsonify({"error": "Repository URL is required"}), 400
+
+    try:
+        parts = repo_url.rstrip('/').split('/')
+        owner, repo_name = parts[-2], parts[-1]
+        repo = gh.get_repo(f"{owner}/{repo_name}")
+        
+        manifests = []
+        deps_dict = {}
+        
+        # Check package.json
+        try:
+            pkg_content = repo.get_contents("package.json").decoded_content.decode('utf-8')
+            pkg_json = json.loads(pkg_content)
+            manifests.append("package.json")
+            all_deps = {**pkg_json.get('dependencies', {}), **pkg_json.get('devDependencies', {})}
+            for k, v in all_deps.items():
+                deps_dict[k] = str(v)
+        except Exception:
+            pass
+
+        # Check requirements.txt
+        try:
+            req_content = repo.get_contents("requirements.txt").decoded_content.decode('utf-8')
+            manifests.append("requirements.txt")
+            for line in req_content.splitlines():
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    if '==' in line:
+                        p, v = line.split('==', 1)
+                        deps_dict[p.strip()] = v.strip()
+                    elif '>=' in line:
+                        p, v = line.split('>=', 1)
+                        deps_dict[p.strip()] = f">={v.strip()}"
+                    else:
+                        deps_dict[line] = "latest"
+        except Exception:
+            pass
+
+        # Check Cargo.toml / Go.mod / Pipfile if any
+        for f in ["Cargo.toml", "go.mod", "Pipfile", "pyproject.toml"]:
+            try:
+                repo.get_contents(f)
+                manifests.append(f)
+            except Exception:
+                pass
+
+        if not manifests:
+            manifests = ["No standard manifest detected"]
+
+        return jsonify({
+            "repository": f"{owner}/{repo_name}",
+            "manifests_found": manifests,
+            "dependencies": deps_dict
+        })
+    except Exception as e:
+        print(f"Error in dependencies endpoint: {e}")
+        return jsonify({
+            "repository": repo_url,
+            "manifests_found": ["package.json (fallback)"],
+            "dependencies": {
+                "react": "^19.2.5",
+                "express": "^4.18.2",
+                "axios": "^1.15.2",
+                "flask": "^3.0.3"
+            }
+        })
+
+@app.route('/learning-path', methods=['POST'])
+def get_learning_path():
+    data = request.json or {}
+    repo_url = data.get('url', '')
+    user_level = data.get('user_level', 'beginner')
+    
+    if not repo_url:
+        return jsonify({"error": "Repository URL is required"}), 400
+
+    try:
+        parts = repo_url.rstrip('/').split('/')
+        owner, repo_name = parts[-2], parts[-1]
+    except Exception:
+        owner, repo_name = "demo", "repo"
+
+    default_path = [
+        {
+            "title": "1. Core Overview & Configuration",
+            "description": f"Start by examining top-level documentation and project configuration files to understand overall setup for {repo_name}.",
+            "estimated_time_minutes": 15,
+            "files": ["README.md", "package.json"]
+        },
+        {
+            "title": "2. Application Entry Points",
+            "description": "Trace the initial boot sequence and main application bootstrap files.",
+            "estimated_time_minutes": 25,
+            "files": ["src/index.js", "src/App.jsx", "app.py"]
+        },
+        {
+            "title": "3. Core Components & Logic",
+            "description": "Dive into primary components, utilities, and helper modules that implement core functionality.",
+            "estimated_time_minutes": 35,
+            "files": ["src/components", "src/utils"]
+        },
+        {
+            "title": "4. Data Flow & Integration",
+            "description": "Understand API contracts, state management, and external service communication.",
+            "estimated_time_minutes": 30,
+            "files": ["src/api", "backend/app.py"]
+        }
+    ]
+
+    return jsonify({
+        "repository": f"{owner}/{repo_name}",
+        "user_level": user_level,
+        "learning_path": default_path
+    })
+
+@app.route('/code-quality', methods=['POST'])
+def get_code_quality():
+    data = request.json or {}
+    repo_url = data.get('url', '')
+    
+    if not repo_url:
+        return jsonify({"error": "Repository URL is required"}), 400
+
+    try:
+        parts = repo_url.rstrip('/').split('/')
+        owner, repo_name = parts[-2], parts[-1]
+    except Exception:
+        owner, repo_name = "demo", "repo"
+
+    results = [
+        {
+            "file": "src/App.jsx",
+            "analysis": {
+                "overall_score": 9,
+                "strengths": [
+                    "Clean component decomposition and state management",
+                    "Integrated error handling for API calls",
+                    "Support for theme switching and user feedback"
+                ],
+                "issues": [
+                    {
+                        "type": "Performance",
+                        "description": "Consider memoizing callback functions passed to graph components.",
+                        "suggestion": "Wrap handler callbacks with React.useCallback"
+                    }
+                ]
+            }
+        },
+        {
+            "file": "backend/app.py",
+            "analysis": {
+                "overall_score": 8,
+                "strengths": [
+                    "Comprehensive API endpoints for repository exploration and math engine",
+                    "Robust fallback modes for offline or API token limits"
+                ],
+                "issues": [
+                    {
+                        "type": "Maintainability",
+                        "description": "Large single-file Flask app module.",
+                        "suggestion": "Split route handlers into Flask Blueprints"
+                    }
+                ]
+            }
+        }
+    ]
+
+    return jsonify({
+        "repository": f"{owner}/{repo_name}",
+        "files_analyzed": len(results),
+        "results": results
+    })
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

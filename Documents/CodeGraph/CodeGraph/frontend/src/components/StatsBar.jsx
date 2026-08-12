@@ -1,4 +1,5 @@
-import { FileText, FolderOpen, Code2, Info } from 'lucide-react';
+import { FileText, FolderOpen, Code2, Info, Star, GitBranch } from 'lucide-react';
+import { useMemo } from 'react';
 
 /**
  * Displays repository statistics in a row of glass cards.
@@ -10,7 +11,7 @@ export default function StatsBar({ stats }) {
   // Try to detect primary language from file extensions in the stats
   const language = stats.language || 'Multi-lang';
 
-  const items = [
+  const items = useMemo(() => [
     {
       icon: FileText,
       value: stats.files || 0,
@@ -22,6 +23,18 @@ export default function StatsBar({ stats }) {
       value: stats.folders || 0,
       label: 'Folders',
       variant: 'folders',
+    },
+    {
+      icon: Star,
+      value: stats.stars || 0,
+      label: 'Stars',
+      variant: 'stars',
+    },
+    {
+      icon: GitBranch,
+      value: stats.forks || 0,
+      label: 'Forks',
+      variant: 'forks',
     },
     {
       icon: Code2,
